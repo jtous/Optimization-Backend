@@ -2,6 +2,7 @@ template st.optim.definitions.header.Component: st.common.ComponentHelper
   implements st.optim.definitions.header.ComponentDefinitionHeader {
 
 st.optim.membrane.ControllerGenerator ctrlGenerator = plugin(st.optim.membrane);
+st.interfaces.IDLDefinition idl2c = st.interfaces.IDL2C ; 
 
 $${
 
@@ -59,6 +60,10 @@ struct __component_<definition.name;format="toCName">_internal_data_t {
 <! SSZ : END MODIFICATION !>
 /* End definition of internal component data type */
 
+/* Start collection arrays declaration (StaticBindings optimization) */
+<StaticBindingsClientCollectionsArrays(definition=definition, instance=instance)>
+/* End collection arrays declaration (StaticBindings optimization) */
+
 /* Start definition of component type */
 <! SSZ : BEGIN MODIFICATION !>
 <if (!(instance.decorations.("allow-instance-data-removal")))>
@@ -72,7 +77,11 @@ struct __component_<definition.name;format="toCName">_internal_data_t {
 /* End declaration of interface V-Tables. */
 
 /* Start declaration of factory */
-<! SSZ : BEGIN MODIFICATION !><! Here and inside !>
+<! SSZ : BEGIN MODIFICATION !>
+// Start macros for @StaticBindings-optimized Collections
+<AddStaticBindingsCollectionItfInitMacros(definition=definition, instance=definition)>
+// End macros for @StaticBindings-optimized Collections
+
 <if (!(instance.decorations.("allow-instance-data-removal")))>
 <FactoryDef(definition=definition, instance=instance)>
 <endif>
@@ -145,11 +154,11 @@ InterfaceDescriptorDecl(definition, itf, instance, isInternal) ::= <<
 <if (isClient.(itf.role))>
   <if (itf.numberOfElement)>
   <! Optimization : Here we check if bindings from our instance are static !>
-    <if (instance.decorations.("binding-descriptors").(StaticBindingItfName(itfName=itf.name, isInternal=isInternal)).binding.astDecorations.("is-static"))>
-// Optimized : Removed declaration for memory saving 1
+    <if (definition.astDecorations.("parent-has-static-bindings"))>
+// @StaticBindings Optimized collection (client): Declare the "shortcut" array in a dedicated section further in the file. 
 // <InterfaceType(signature=itf.signature)> <itf.name><if (itf.numberOfElement)>[<itf.numberOfElement>]<endif>;
     <else>
-// No optimization : default behavior 1
+// No optimization: Standard collection
 <InterfaceType(signature=itf.signature)> <itf.name><if (itf.numberOfElement)>[<itf.numberOfElement>]<endif>;
     <endif>
   <else>
@@ -171,7 +180,7 @@ InterfaceDescriptorDecl(definition, itf, instance, isInternal) ::= <<
   <if (definition.astDecorations.("parent-has-static-bindings"))>
     <! We do not optimize collection interfaces yet !>
     <if (itf.numberOfElement)>
-// No optimization : Collection interfaces are not supported yet
+// Optimized collection (server)
 <InterfaceDescType(signature=itf.signature)> <itf.name><if (itf.numberOfElement)>[<itf.numberOfElement>]<endif>;
     <else>
       <! As we do not optimize collection interfaces, we've got to care whether a binding source is a collection so the destination isn't optimized either !>
@@ -212,6 +221,15 @@ InterfaceDescriptorDecl(definition, itf, instance, isInternal) ::= <<
   <endif>
 <endif>
 <! SSZ : END MODIFICATION !>
+>>
+
+StaticBindingsClientCollectionsArrays(definition, instance) ::= <<
+<if (definition.interfaces)><definition.interfaces:{ <if (isClient.(it.role))><if (it.numberOfElement)><if (definition.astDecorations.("parent-has-static-bindings"))>
+<SBClientCollectionArrayDecl(definition=definition, itf=it, itfDef=it.astDecorations.("interfaceDefinition"))><endif><endif><endif>} ; separator="\n"><endif>
+>>
+
+SBClientCollectionArrayDecl(definition, itf, itfDef) ::= <<
+<if (itfDef.methods)><itfDef.methods:{<methodPointersArrayDef(definition=definition, method=it, itf=itf, withThisPtr="false")>;}; separator="\n"><endif>
 >>
 
 SubComponentStructures(definition) ::= <<
@@ -444,6 +462,37 @@ int __component_<definition.name;format="toCName">_factory(void **instance, void
 int __component_<definition.name;format="toCName">_destroy(void *instance, void *allocItf);
 >>
 
+AddStaticBindingsCollectionItfInitMacros(definition, instance) ::= <<
+<definition.interfaces:{<AddStaticBindingsCollectionItfInitMacro(definition=definition, itf=it, instance=instance)>}; separator="\n">
+>>
+
+AddStaticBindingsCollectionItfInitMacro(definition, itf, instance) ::= <<
+<if (isClient.(itf.role))>
+<if (itf.numberOfElement)>
+<if (definition.astDecorations.("parent-has-static-bindings"))>
+<if (itf.astDecorations.("interfaceDefinition"))>
+<itf.astDecorations.("interfaceDefinition").methods:{<AddStaticBindingsCollectionFuncInitMacro(definition=definition, itf=itf, method=it, instance=instance)>}; separator="\n">
+<endif>
+<endif>
+<endif>
+<endif>
+>>
+
+AddStaticBindingsCollectionFuncInitMacro(definition, itf, method, instance) ::= <<
+<FuncPointerTypeDef(definition=definition, itf=itf, method=method, withThisPtr="false")>
+#define <definition.name;format="toUpperCName">_<itf.name;format="toUpperCName">_<method.name;format="toUpperCName">_INIT_COLL_FNCPTR_ARRAY(var_name, <itf.astDecorations.("collectionIndexes"):{<AddFuncsPtrsArgs(index=it)>}; separator=", ">) \
+<FuncPointerTypeName(definition=definition, itf=itf, name=method.name)> var_name[<itf.numberOfElement>] = { <itf.astDecorations.("collectionIndexes"):{<AddFuncsPtrsArgs(index=it)>}; separator=", "> };
+
+>>
+
+FuncPointerTypeDef(definition, itf, method, withThisPtr) ::= "typedef <(idl2c.methodDef)(method=method, methodName=FuncPointerSignature(definition=definition, itf=itf, name=method.name), withThisPtr=withThisPtr)>;"
+
+FuncPointerSignature(definition, itf, name) ::= "(* <FuncPointerTypeName(definition=definition, itf=itf, name=name)>)"
+FuncPointerTypeName(definition, itf, name) ::= "<definition.name;format=\"toCName\">_<itf.name;format=\"toCName\">_<name>_t"
+
+AddFuncsPtrsArgs(index) ::= "func_ptr_<index>"
+//
+
 AddItfNames(definition) ::= <<
 <definition.interfaces:AddItfName(itf=it)><if (definition.astNodeTypes.("internalInterface"))>
 <if (definition.internalInterfaces)>
@@ -496,14 +545,12 @@ InitializeInterface(definition, instance, itf, isInternal) ::= <<
 /* <InitializeClientInterface(definition=definition, itf=itf)>, */ \
   <else>
     <if (definition.astDecorations.("parent-has-static-bindings"))>
-<! SSZ : Exception : If someone tries to optimize a collection interface, we don't optimize the latter yet !>
       <if (itf.numberOfElement)>
-<InitializeClientInterface(definition=definition, itf=itf)>,
+/* <InitializeClientInterface(definition=definition, itf=itf)>, */
       <else>
       	<if (itf.astDecorations.("binding-destination-is-controller"))>
 <InitializeClientInterface(definition=definition, itf=itf)>,
 		<else>
-<! SSZ : Exception : If someone tries to optimize a binding with a collection interface as destination, we don't optimize the latter yet !>
         	<if (instance.decorations.("binding-descriptors").(StaticBindingItfName(itfName=itf.name, isInternal=isInternal)).binding.toInterfaceNumber)>
 <InitializeClientInterface(definition=definition, itf=itf)>,
         	<else>
@@ -571,9 +618,8 @@ InitializeLastInterface(definition, instance, itf, isInternal) ::= <<
 /* <InitializeClientInterface(definition=definition, itf=itf)> */ \
   		<else>
     		<if (definition.astDecorations.("parent-has-static-bindings"))>
-<! SSZ : Exception : If someone tries to optimize a collection interface, we don't optimize the latter yet !>
       			<if (itf.numberOfElement)>
-<InitializeClientInterface(definition=definition, itf=itf)>
+/* <InitializeClientInterface(definition=definition, itf=itf)> */
       			<else>
 <! SSZ : Exception : If someone tries to optimize a binding with a collection interface as destination, we don't optimize the latter yet !>
         			<if (instance.decorations.("binding-descriptors").(StaticBindingItfName(itfName=itf.name, isInternal=isInternal)).binding.toInterfaceNumber)>
@@ -728,6 +774,15 @@ ComponentFactoryParameter(definition, parameter) ::= <<
 int <parameter.name;format="toCName">
 <endif>
 >>
+
+// -----------------------------------------------------------------------------
+// Nearly brutally copied from IDL2C/IDL2CPP since we need to define function pointers arrays
+
+// we took inspiration from methodPointerDef to create methodPointersArrayDef
+methodPointersArrayDef(definition, method, itf, withThisPtr) ::= "<(idl2c.methodDef)(method=method, methodName=methodPointersArrayName(definition=definition, name=method.name, itf=itf), withThisPtr=withThisPtr)> "
+
+methodPointersArrayName(definition, name, itf) ::= "(* __component_<definition.name;format=\"toCName\">_<itf.name>_<name>[<itf.numberOfElement>])"
+//
 
 }$$ 
 }
